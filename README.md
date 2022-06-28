@@ -72,6 +72,10 @@ SUBROUTINE_PATH=/opt/pocketnc/Settings/subroutines:/home/pocketnc/subroutines
 
 TODO
 
+### Developer Notes ###
+When working with new subroutines, other LinuxCNC Machines store results in analog registers beyond what the PocketNC supports. The REGEX `(^\s*)(M68 E[0-9]* Q\[(.*((?<=<).*)>)\])` will match all variables written to analog registers. You can replace these matches using the previous capture groups with `$1($2)\n$1(DEBUG, $4 = $3)`, which will make the existing call a comment and print the variable name + value to the PocketNC UI.
+
 # LICENSE #
 
 All files contained in this repository are available under an Apache 2.0 License: https://www.apache.org/licenses/LICENSE-2.0
+

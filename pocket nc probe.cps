@@ -299,7 +299,6 @@ var gFeedModeModal = createModal({}, gFormat); // modal group 5 // G93-94
 var gUnitModal = createModal({}, gFormat); // modal group 6 // G20-21
 var gCycleModal = createModal({}, gFormat); // modal group 9 // G81, ...
 var gRetractModal = createModal({}, gFormat); // modal group 10 // G98-99
-
 var mTCPModal = createModal({}, mFormat); // M428, M429
 
 // fixed settings
@@ -1351,6 +1350,33 @@ function onSection() {
     }
   }
 
+  if (isProbeOperation())
+  {
+    beginWritingProbingCoordinates();
+  }
+}
+
+
+function getProbingArguments(cycle, update_wcs) {
+  return [
+    toolFormat.format(tool.number),                                     //<probe_tool_number> = #1    (=99)
+    xyzFormat.format(cycle.bottom ? cycle.bottom : 0.5),                //<max_z_distance> = #2       (=0.5000)
+    xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
+        cycle.probeClearance + cycle.probeOvertravel : 0.5),            //<max_xy_distance> = #3      (=0.5000)
+    xyzFormat.format(0.1),                                              //<xy_clearance> = #4         (=0.1000)
+    xyzFormat.format(cycle.clearance ? cycle.clearance : 0.1),          //<z_clearance> = #5          (=0.1000)
+    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),//<step_off_width> = #6       (=0.5000)
+    xyzFormat.format(0),                                                //<extra_probe_depth> = #7    (=0.0000)
+    feedFormat.format(cycle.feedrate ? cycle.feedrate / 4 : 0),         //<probe_slow_fr> = #8        (=0.0)
+    feedFormat.format(cycle.feedrate ? cycle.feedrate : 10),            //<probe_fast_fr> = #9        (=10.0)
+    xyzFormat.format(0),                                                //<calibration_offset> = #10  (=0.0000)
+    xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                //<x_hint> = #11              (=1.0000)
+    xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                //<y_hint> = #12              (=1.0000)
+    xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                //<diameter_hint> = #13       (=1.0000)
+    xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                //<edge_width> = #14          (=0.5000)
+    update_wcs == 1 ? 0 : 1,                                            //<probe_mode> = #15          (=0)
+    Number(update_wcs),                                                 //<wco_rotation> = #16        (=0)
+  ];
 }
 
 function onDwell(seconds) {
@@ -1387,49 +1413,53 @@ function onCyclePoint(x, y, z) {
     return;
   }
   switch (cycleType) {
-  case "tapping":
-  case "left-tapping":
-  case "right-tapping":
-    cycleExpanded = true;
-    repositionToCycleClearance(cycle, x, y, z);
-    writeBlock(
-      gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-      conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.retract)),
-      conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.retract)),
-      conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.retract)),
-      conditional(!getProperty("useG0"), getFeed(highFeedrate))
-    );
-    writeBlock(
-      gAbsIncModal.format(90), gFormat.format(33.1),
-      conditional(gPlaneModal.getCurrent() == 17, zOutput.format(z)),
-      conditional(gPlaneModal.getCurrent() == 18, yOutput.format(y)),
-      conditional(gPlaneModal.getCurrent() == 19, xOutput.format(x)),
-      "K" + pitchFormat.format(tool.threadPitch)
-    );
-    gMotionModal.reset();
-    writeBlock(
-      gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-      conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.clearance)),
-      conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.clearance)),
-      conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.clearance)),
-      conditional(!getProperty("useG0"), getFeed(highFeedrate))
-    );
-    return;
-  /*
-  case "tapping-with-chip-breaking":
-  case "left-tapping-with-chip-breaking":
-  case "right-tapping-with-chip-breaking":
-  */
+    case "tapping":
+    case "left-tapping":
+    case "right-tapping":
+      cycleExpanded = true;
+      repositionToCycleClearance(cycle, x, y, z);
+      writeBlock(
+        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
+        conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.retract)),
+        conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.retract)),
+        conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.retract)),
+        conditional(!getProperty("useG0"), getFeed(highFeedrate))
+      );
+      writeBlock(
+        gAbsIncModal.format(90), gFormat.format(33.1),
+        conditional(gPlaneModal.getCurrent() == 17, zOutput.format(z)),
+        conditional(gPlaneModal.getCurrent() == 18, yOutput.format(y)),
+        conditional(gPlaneModal.getCurrent() == 19, xOutput.format(x)),
+        "K" + pitchFormat.format(tool.threadPitch)
+      );
+      gMotionModal.reset();
+      writeBlock(
+        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
+        conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.clearance)),
+        conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.clearance)),
+        conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.clearance)),
+        conditional(!getProperty("useG0"), getFeed(highFeedrate))
+      );
+      return;
+    /*
+    case "tapping-with-chip-breaking":
+    case "left-tapping-with-chip-breaking":
+    case "right-tapping-with-chip-breaking":
+    */
   }
 
-  if (isFirstCyclePoint()) {
-    repositionToCycleClearance(cycle, x, y, z);
-
-    // return to initial Z which is clearance plane and set absolute mode
-
+  if (isFirstCyclePoint() || isProbeOperation()) {
+    if (!isProbeOperation()){
+      // return to initial Z which is clearance plane and set absolute mode
+      repositionToCycleClearance(cycle, x, y, z);
+    }
+    
     var F = cycle.feedrate;
-    var P = !cycle.dwell ? 0 : clamp(0.001, cycle.dwell, 99999999); // in seconds
+    var P = !cycle.dwell ? 0 : clamp(0.001, cycle.dwell, 99999999); // in seconds"
 
+    var subroutineName;
+    var commitWCS = hasParameter("operation-strategy") ? getParameter("operation-strategy") != "probe_geometry" : true; 
+    
     switch (cycleType) {
     case "drilling":
       writeBlock(
@@ -1535,12 +1565,36 @@ function onCyclePoint(x, y, z) {
         );
       }
       break;
+    // Begin Probing WCO Operations
+    case "probing-x":
+      subroutineName = cycle.approach1 == "negative" ? "probe_x_minus_wco" : "probe_x_plus_wco";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    case "probing-y":
+      subroutineName = cycle.approach1 == "negative" ? "probe_y_minus_wco" : "probe_y_plus_wco";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    case "probing-z":
+      subroutineName = cycle.approach1 == "negative" ? "probe_z_minus_wco" : "probe_z_plus_wco";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
     case "probing-xy-circular-boss":
-        callSubroutine(
-            "probe_round_boss",
-            getMultiAxisProbingArguments(cycle, false, false)
-        );
-        break;
+      subroutineName = "probe_round_boss";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    // End Probing WCO Operations
     default:
       expandCyclePoint(x, y, z);
     }
@@ -1573,9 +1627,14 @@ function onCyclePoint(x, y, z) {
 }
 
 function onCycleEnd() {
-  if (!cycleExpanded) {
-    writeBlock(gCycleModal.format(80));
+  if (isProbeOperation()) {
+    zOutput.reset();
     gMotionModal.reset();
+  } else {
+    if (!cycleExpanded) {
+      writeBlock(gCycleModal.format(80));
+      gMotionModal.reset();
+    }
   }
 }
 
@@ -1892,28 +1951,6 @@ function getCoolantCodes(coolant) {
   return undefined;
 }
 
-function getMultiAxisProbingArguments(cycle, update_wcs, update_wcs_rotation) {
-  return [
-    toolFormat.format(tool.number),                               //<probe_tool_number> = #1    (=99)
-    xyzFormat.format(cycle.bottom ? cycle.bottom : 0.5),                //<max_z_distance> = #2       (=0.5000)
-    xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
-        cycle.probeClearance + cycle.probeOvertravel : 0.5),            //<max_xy_distance> = #3      (=0.5000)
-    xyzFormat.format(0.1),                                              //<xy_clearance> = #4         (=0.1000)
-    xyzFormat.format(cycle.clearance ? cycle.clearance : 0.1),          //<z_clearance> = #5          (=0.1000)
-    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),//<step_off_width> = #6       (=0.5000)
-    xyzFormat.format(0),                                                //<extra_probe_depth> = #7    (=0.0000)
-    feedFormat.format(cycle.feedrate ? cycle.feedrate / 2 : 0),         //<probe_slow_fr> = #8        (=0.0)
-    feedFormat.format(cycle.feedrate ? cycle.feedrate : 10),            //<probe_fast_fr> = #9        (=10.0)
-    xyzFormat.format(0),                                                //<calibration_offset> = #10  (=0.0000)
-    //xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                //<x_hint> = #11              (=1.0000)
-    //xyzFormat.format(cycle.width1 ? cycle.width2 : 1.0),                //<y_hint> = #12              (=1.0000)
-    //xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                //<diameter_hint> = #13       (=1.0000)
-    //xyzFormat.format(cycle.width1 ? cycle.width2 : 1.0),                //<edge_width> = #14          (=0.5000)
-    update_wcs == 1 ? 0 : 1,                                            //<probe_mode> = #15          (=0)
-    update_wcs_rotation == 1 ? 1 : 0,                                   //<wco_rotation> = #16        (=0)
-  ];
-}
-
 function onProbingEnd() {
     // probing may change the motion mode, so it needs to be re-established in the next move
     forceXYZ();
@@ -1978,6 +2015,10 @@ function onSectionEnd() {
     onCommand(COMMAND_BREAK_CONTROL);
   }
   forceAny();
+  if (isProbeOperation())
+  {
+    endWritingProbingCoordinates();
+  }
 }
 
 /** Output block to do safe retract and/or move to home position. */
@@ -2089,6 +2130,25 @@ function callSubroutine(programName, programArguments) {
     error(localize("Program name has not been specified."));
     return;
   }
+}
+
+function beginWritingProbingCoordinates() {
+  var fileName;
+  if (hasParameter("operation-comment")) {
+    fileName = getParameter("operation-comment");
+  } else if (programName) {
+    fileName = programName;
+  } else {
+    fileName = "probe-results"
+  }
+  var fileExtension = ".ngc";
+  fileName = fileName.replace(/\s/g, '');
+
+  writeComment("PROBEOPEN " + fileName + fileExtension);
+}
+
+function endWritingProbingCoordinates() {
+  writeComment("PROBECLOSE");
 }
 
 function setProperty(property, value) {
