@@ -646,6 +646,10 @@ function onOpen() {
       }
     }
 */
+       // Probing Surface Inspection
+    if (typeof inspectionWriteVariables == "function") {
+      inspectionWriteVariables();
+    }
   }
 
   if (false) {
@@ -1336,7 +1340,7 @@ function onSection() {
         activeMovements &&
         (getCurrentSectionId() > 0) &&
         ((getPreviousSection().getPatternId() == currentSection.getPatternId()) && (currentSection.getPatternId() != 0))) {
-      // use the current feeds
+      // use the current feeds˛
     } else {
       initializeActiveFeeds();
     }
@@ -1356,15 +1360,15 @@ function onSection() {
   }
 }
 
-
 function getProbingArguments(cycle, update_wcs) {
   return [
     toolFormat.format(tool.number),                                     //<probe_tool_number> = #1    (=99)
-    xyzFormat.format(cycle.bottom ? cycle.bottom : 0.5),                //<max_z_distance> = #2       (=0.5000)
+    xyzFormat.format(cycle.retract && cycle.depth && cycle.probeOvertravel ? 
+      cycle.retract - cycle.depth + cycle.probeOvertravel: 0.5),        //<max_xy_distance> = #3      (=0.5000)
     xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
-        cycle.probeClearance + cycle.probeOvertravel : 0.5),            //<max_xy_distance> = #3      (=0.5000)
-    xyzFormat.format(0.1),                                              //<xy_clearance> = #4         (=0.1000)
-    xyzFormat.format(cycle.clearance ? cycle.clearance : 0.1),          //<z_clearance> = #5          (=0.1000)
+      cycle.probeClearance + cycle.probeOvertravel: 0.5),               //<max_xy_distance> = #3      (=0.5000)
+    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),//<xy_clearance> = #4         (=0.1000)
+    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),//<z_clearance> = #5          (=0.1000)
     xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),//<step_off_width> = #6       (=0.5000)
     xyzFormat.format(0),                                                //<extra_probe_depth> = #7    (=0.0000)
     feedFormat.format(cycle.feedrate ? cycle.feedrate / 4 : 0),         //<probe_slow_fr> = #8        (=0.0)
@@ -1375,7 +1379,7 @@ function getProbingArguments(cycle, update_wcs) {
     xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                //<diameter_hint> = #13       (=1.0000)
     xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                //<edge_width> = #14          (=0.5000)
     update_wcs == 1 ? 0 : 1,                                            //<probe_mode> = #15          (=0)
-    Number(update_wcs),                                                 //<wco_rotation> = #16        (=0)
+    Number(update_wcs),                                                      //<wco_rotation> = #16        (=0)
   ];
 }
 
@@ -1574,6 +1578,12 @@ function onCyclePoint(x, y, z) {
       );
       break;
     case "probing-y":
+      var zProbeStack = cycle.depth + (tool.diameter/2);
+      writeBlock(
+        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
+        zOutput.format(zProbeStack),
+        conditional(!getProperty("useG0"), feedOutput.format(cycle.plungeFeedrate))
+      );
       subroutineName = cycle.approach1 == "negative" ? "probe_y_minus_wco" : "probe_y_plus_wco";
       callSubroutine(
         subroutineName,
@@ -1582,6 +1592,38 @@ function onCyclePoint(x, y, z) {
       break;
     case "probing-z":
       subroutineName = cycle.approach1 == "negative" ? "probe_z_minus_wco" : "probe_z_plus_wco";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    case "probing-x-wall":
+    case "probing-x-channel":
+    case "probing-x-channel-with-island":
+      subroutineName = "probe_ridge_x";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    case "probing-x-plane-angle":
+      subroutineName = cycle.approach1 == "negative" ? "probe_left_edge_angle" : "probe_right_edge_angle";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    case "probing-y-wall":
+    case "probing-y-channel":
+    case "probing-y-channel-with-island":
+      subroutineName = "probe_ridge_y";
+      callSubroutine(
+        subroutineName,
+        getProbingArguments(cycle, commitWCS)
+      );
+      break;
+    case "probing-y-plane-angle":
+      subroutineName = cycle.approach1 == "negative" ? "probe_back_edge_angle" : "probe_front_edge_angle";
       callSubroutine(
         subroutineName,
         getProbingArguments(cycle, commitWCS)
