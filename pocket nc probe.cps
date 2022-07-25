@@ -1363,11 +1363,11 @@ function onSection() {
 function getProbingArguments(cycle, update_wcs) {
   return [
     toolFormat.format(tool.number),                                     //<probe_tool_number> = #1    (=99)
-    xyzFormat.format(cycle.retract && cycle.depth && cycle.probeOvertravel ? 
-      cycle.retract - cycle.depth + cycle.probeOvertravel: 0.5),        //<max_xy_distance> = #3      (=0.5000)
+    xyzFormat.format(cycle.clearance && cycle.depth && cycle.probeOvertravel ? 
+      cycle.clearance + cycle.probeOvertravel: 0.5),                    //<max_z_distance> = #2      (=0.5000)
     xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
       cycle.probeClearance + cycle.probeOvertravel: 0.5),               //<max_xy_distance> = #3      (=0.5000)
-    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),//<xy_clearance> = #4         (=0.1000)
+    0,                                                                  //<xy_clearance> = #4         (=0.1000)
     xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),//<z_clearance> = #5          (=0.1000)
     xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),//<step_off_width> = #6       (=0.5000)
     xyzFormat.format(0),                                                //<extra_probe_depth> = #7    (=0.0000)
@@ -1571,6 +1571,12 @@ function onCyclePoint(x, y, z) {
       break;
     // Begin Probing WCO Operations
     case "probing-x":
+      var zProbeStack = cycle.depth + (tool.diameter/2);
+      writeBlock(
+        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
+        zOutput.format(zProbeStack),
+        conditional(!getProperty("useG0"), feedOutput.format(cycle.plungeFeedrate))
+      );
       subroutineName = cycle.approach1 == "negative" ? "probe_x_minus_wco" : "probe_x_plus_wco";
       callSubroutine(
         subroutineName,
