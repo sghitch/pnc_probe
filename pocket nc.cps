@@ -1,21 +1,21 @@
 /**
-  Copyright (C) 2012-2022 by Autodesk, Inc.
+  Copyright (C) 2012-2024 by Autodesk, Inc.
   All rights reserved.
 
   Pocket NC post processor configuration.
 
-  $Revision: 43811 9402f830a000e97e8885d344dcc12dc65bf77998 $
-  $Date: 2022-05-20 14:56:40 $
+  $Revision: 44130 ead7a535cb1185889026df3401cd93599aec0193 $
+  $Date: 2024-06-05 09:00:10 $
 
   FORKID {B9F40C50-EBFF-4547-90FF-CAF4C01C8E30}
 */
 
 description = "Pocket NC";
-vendor = "Pocket NC";
-vendorUrl = "http://www.pocketnc.com/";
-legal = "Copyright (C) 2012-2022 by Autodesk, Inc.";
+vendor = "Penta Machine";
+vendorUrl = "https://www.pentamachine.com/";
+legal = "Copyright (C) 2012-2024 by Autodesk, Inc.";
 certificationLevel = 2;
-minimumRevision = 45821;
+minimumRevision = 45899;
 
 longDescription = "Generic post for Pocket NC. Note that the XYZ axes of the WCS in the Setup should be set such that the axes all align with the machine XYZ axes in the A0/B0 machine orientation (this means that the WCS Z-axis would be horizontal like on a lathe). By default the post will make the tool go to the home position between operations if the A-axis changes by more than the limit specified by the 'maximumAAxisChange' property (20 degrees by default). You can turn off homing between operations if desired by turning off the 'Go home between operations' property but you would have to make sure the tool doesn't collide with the part during AB reorientation.";
 
@@ -155,7 +155,7 @@ properties = {
   },
   useTCP: {
     title      : "Use TCPC mode",
-    description: "Enable if the control supports TCPC mode.",
+    description: "Enable if the control supports TCPC mode.  This property is ignored if a Machine Configuration is used.",
     group      : "multiAxis",
     type       : "boolean",
     value      : false,
@@ -171,7 +171,7 @@ properties = {
   },
   useInverseTime: {
     title      : "Use inverse time feedrates",
-    description: "Enable to use inverse time feedrates for multi-axis moves.",
+    description: "Enable to use inverse time feedrates for multi-axis moves.  This property is ignored if a Machine Configuration is used.",
     group      : "multiAxis",
     type       : "boolean",
     value      : true,
@@ -196,7 +196,7 @@ properties = {
       {title:"V2-50", id:"V2-50"}
     ],
     value: "V2",
-    scope: "post"
+    scope: ["post", "machine"]
   },
   safePositionMethod: {
     title      : "Safe Retracts",
@@ -299,6 +299,7 @@ var gFeedModeModal = createModal({}, gFormat); // modal group 5 // G93-94
 var gUnitModal = createModal({}, gFormat); // modal group 6 // G20-21
 var gCycleModal = createModal({}, gFormat); // modal group 9 // G81, ...
 var gRetractModal = createModal({}, gFormat); // modal group 10 // G98-99
+
 var mTCPModal = createModal({}, mFormat); // M428, M429
 
 // fixed settings
@@ -392,11 +393,22 @@ var eulerConvention = EULER_ZXZ_R; // euler angle convention for 3+2 operations
 var receivedMachineConfiguration;
 var operationSupportsTCP;
 var multiAxisFeedrate;
+var tcpIsSupported;
 
 /**
   Activates the machine configuration (both from CAM and hardcoded)
 */
 function activateMachine() {
+  // determine if TCP is supported by the machine
+  tcpIsSupported = false;
+  var axes = [machineConfiguration.getAxisU(), machineConfiguration.getAxisV(), machineConfiguration.getAxisW()];
+  for (var i in axes) {
+    if (axes[i].isEnabled() && axes[i].isTCPEnabled()) {
+      tcpIsSupported = true;
+      break;
+    }
+  }
+
   // disable unsupported rotary axes output
   if (!machineConfiguration.isMachineCoordinate(0) && (typeof aOutput != "undefined")) {
     aOutput.disable();
@@ -646,10 +658,6 @@ function onOpen() {
       }
     }
 */
-       // Probing Surface Inspection
-    if (typeof inspectionWriteVariables == "function") {
-      inspectionWriteVariables();
-    }
   }
 
   if (false) {
@@ -777,7 +785,9 @@ function initializeActiveFeeds() {
       var feedContext = new FeedContext(id, localize("Cutting"), getParameter("operation:tool_feedCutting"));
       activeFeeds.push(feedContext);
       activeMovements[MOVEMENT_CUTTING] = feedContext;
-      activeMovements[MOVEMENT_LINK_TRANSITION] = feedContext;
+      if (!hasParameter("operation:tool_feedTransition")) {
+        activeMovements[MOVEMENT_LINK_TRANSITION] = feedContext;
+      }
       activeMovements[MOVEMENT_EXTENDED] = feedContext;
     }
     ++id;
@@ -884,6 +894,14 @@ function initializeActiveFeeds() {
     }
     ++id;
   }
+  if (hasParameter("operation:tool_feedTransition")) {
+    if (movements & (1 << MOVEMENT_LINK_TRANSITION)) {
+      var feedContext = new FeedContext(id, localize("Transition"), getParameter("operation:tool_feedTransition"));
+      activeFeeds.push(feedContext);
+      activeMovements[MOVEMENT_LINK_TRANSITION] = feedContext;
+    }
+    ++id;
+  }
 
   for (var i = 0; i < activeFeeds.length; ++i) {
     var feedContext = activeFeeds[i];
@@ -977,14 +995,14 @@ function getWorkPlaneMachineABC(workPlane, rotate) {
   var W = workPlane; // map to global frame
 
   var currentABC = isFirstSection() ? new Vector(0, 0, 0) : getCurrentDirection();
-  var abc = machineConfiguration.getABCByPreference(W, currentABC, ABC, PREFER_PREFERENCE, ENABLE_ALL);
+  var abc = currentSection.getABCByPreference(machineConfiguration, W, currentABC, ABC, PREFER_PREFERENCE, ENABLE_ALL);
 
   var direction = machineConfiguration.getDirection(abc);
   if (!isSameDirection(direction, W.forward)) {
     error(localize("Orientation not supported."));
   }
 
-  var tcp = getProperty("useTCP") && !useMultiAxisFeatures;
+  var tcp = tcpIsSupported && !useMultiAxisFeatures;
   cancelTransformation();
   if (tcp) {
     setRotation(W); // TCP mode
@@ -996,38 +1014,59 @@ function getWorkPlaneMachineABC(workPlane, rotate) {
   return abc;
 }
 
-/** method = 1: rotate axes to closest 0 (eg G28), 2: set rotary axes origin to current position (eg G92) */
-// var unwindSettings = {method:1, codes:[gFormat.format(28), gAbsIncModal.format(91)], outputAngles:true, resetG90:true}; // Haas
-// var unwindSettings = {method:2, codes:[gFormat.format(92)], outputAngles:true, resetG90:false}; // Fanuc
-var unwindSettings = {method:2, codes:[mFormat.format(999)], outputAngles:true, resetG90:false}; // Pocket NC
+var UNWIND_ZERO = 1; // rotate axes to closest 0 (eg G28)
+var UNWIND_STAY = 2; // set rotary axes origin to current position (eg G92)
+var unwindSettings = {
+  method        : UNWIND_STAY, // UNWIND_ZERO (move to closest 0 (G28)) or UNWIND_STAY (table does not move (G92))
+  codes         : [mFormat.format(999)], // formatted code(s) that will (virtually) unwind axis (G90 G28), (G92), etc.
+  workOffsetCode: "", // prefix for workoffset number if it is required to be output
+  useAngle      : "prefix", // 'true' outputs angle with standard output variable, 'prefix' uses 'anglePrefix', 'false' does not output angle
+  anglePrefix   : ["", "P", ""], // optional prefixes for output angles specified as ["", "", "C"], use blank string if axis does not unwind
+  resetG90      : false // set to 'true' if G90 needs to be output after the unwind block
+};
 
 function unwindABC(abc) {
   if (typeof unwindSettings == "undefined") {
     return;
   }
-  if (unwindSettings.method != 1 && unwindSettings.method != 2) {
+  if (unwindSettings.method != UNWIND_ZERO && unwindSettings.method != UNWIND_STAY) {
     error(localize("Unsupported unwindABC method."));
     return;
   }
 
   var axes = new Array(machineConfiguration.getAxisU(), machineConfiguration.getAxisV(), machineConfiguration.getAxisW());
+  var currentDirection = getCurrentDirection();
   for (var i in axes) {
-    if (axes[i].isEnabled()) {
+    if (axes[i].isEnabled() && (unwindSettings.useAngle != "prefix" || unwindSettings.anglePrefix[axes[i].getCoordinate] != "")) {
       var j = axes[i].getCoordinate();
-      var orientation = machineConfiguration.getOrientation(getCurrentDirection());
-      var nearestABC = machineConfiguration.getABCByPreference(orientation, abc, ABC, PREFER_PREFERENCE, ENABLE_ALL);
+
+      // only use the active axis in calculations
+      var tempABC = new Vector(0, 0, 0);
+      tempABC.setCoordinate(j, abc.getCoordinate(j));
+      var tempCurrent = new Vector(0, 0, 0); // only use the active axis in calculations
+      tempCurrent.setCoordinate(j, currentDirection.getCoordinate(j));
+      var orientation = machineConfiguration.getOrientation(tempCurrent);
+
+      // get closest angle without respecting 'reset' flag
+      // and distance from previous angle to closest abc
+      var nearestABC = machineConfiguration.getABCByPreference(orientation, tempABC, ABC, PREFER_PREFERENCE, ENABLE_WCS);
       var distanceABC = abcFormat.getResultingValue(Math.abs(Vector.diff(getCurrentDirection(), abc).getCoordinate(j)));
+
+      // calculate distance from calculated abc to closest abc
+      // include move to origin for G28 moves
       var distanceOrigin = 0;
-      if (unwindSettings.method == 2) {
+      if (unwindSettings.method == UNWIND_STAY) {
         distanceOrigin = abcFormat.getResultingValue(Math.abs(Vector.diff(nearestABC, abc).getCoordinate(j)));
       } else { // closest angle
         distanceOrigin = abcFormat.getResultingValue(Math.abs(getCurrentDirection().getCoordinate(j))) % 360; // calculate distance for unwinding axis
         distanceOrigin = (distanceOrigin > 180) ? 360 - distanceOrigin : distanceOrigin; // take shortest route to 0
         distanceOrigin += abcFormat.getResultingValue(Math.abs(abc.getCoordinate(j))); // add distance from 0 to new position
       }
+
+      // determine if the axis needs to be rewound and rewind it if required
       var revolutions = distanceABC / 360;
-      var angle = unwindSettings.method == 2 ? nearestABC.getCoordinate(j) : 0;
-      if (distanceABC > distanceOrigin && (revolutions > 1)) {
+      var angle = unwindSettings.method == UNWIND_STAY ? nearestABC.getCoordinate(j) : 0;
+      if (distanceABC > distanceOrigin && (unwindSettings.method == UNWIND_STAY || (revolutions > 1))) { // G28 method will move rotary, so make sure move is greater than 360 degrees
         if (!retracted) {
           if (typeof moveToSafeRetractPosition == "function") {
             moveToSafeRetractPosition();
@@ -1038,14 +1077,19 @@ function unwindABC(abc) {
         onCommand(COMMAND_UNLOCK_MULTI_AXIS);
         var outputs = [aOutput, bOutput, cOutput];
         outputs[j].reset();
-        writeBlock(unwindSettings.codes, unwindSettings.outputAngles ? "P" + abcFormat.format(angle) : "");
+        writeBlock(
+          unwindSettings.codes,
+          unwindSettings.workOffsetCode ? unwindSettings.workOffsetCode + currentWorkOffset : "",
+          unwindSettings.useAngle == "true" ? outputs[j].format(angle) :
+            (unwindSettings.useAngle == "prefix" ? unwindSettings.anglePrefix[j] + abcFormat.format(angle) : "")
+        );
         if (unwindSettings.resetG90) {
           gAbsIncModal.reset();
           writeBlock(gAbsIncModal.format(90));
         }
         outputs[j].reset();
 
-        var currentDirection = getCurrentDirection();
+        // set the current rotary axis angle from the unwind block
         currentDirection.setCoordinate(j, angle);
         setCurrentDirection(currentDirection);
       }
@@ -1258,8 +1302,7 @@ function onSection() {
     }
     setRotation(remaining);
   }
-  // operationSupportsTCP = currentSection.getOptimizedTCPMode() == OPTIMIZE_NONE;
-  operationSupportsTCP = getProperty("useTCP");
+  operationSupportsTCP = tcpIsSupported;
   if (!currentSection.isMultiAxis() && (useMultiAxisFeatures || isSameDirection(machineConfiguration.getSpindleAxis(), currentSection.workPlane.forward))) {
     operationSupportsTCP = false;
   }
@@ -1299,7 +1342,7 @@ function onSection() {
     writeBlock(gPlaneModal.format(17));
 
     if (!isPrepositioned) {
-      if (!machineConfiguration.isHeadConfiguration()) { // && !getProperty("useTCP")) {
+      if (!machineConfiguration.isHeadConfiguration()) {
         writeBlock(
           gAbsIncModal.format(90),
           gMotionModal.format(G), xOutput.format(initialPosition.x), yOutput.format(initialPosition.y), F
@@ -1340,7 +1383,7 @@ function onSection() {
         activeMovements &&
         (getCurrentSectionId() > 0) &&
         ((getPreviousSection().getPatternId() == currentSection.getPatternId()) && (currentSection.getPatternId() != 0))) {
-      // use the current feeds˛
+      // use the current feeds
     } else {
       initializeActiveFeeds();
     }
@@ -1354,10 +1397,6 @@ function onSection() {
     }
   }
 
-  if (isProbeOperation())
-  {
-    beginWritingProbingCoordinates();
-  }
 }
 
 function onDwell(seconds) {
@@ -1382,31 +1421,6 @@ function getCommonCycle(x, y, z, r) {
     "R" + xyzFormat.format(r)];
 }
 
-function getProbingArguments(cycle, commitWCS) {
-  return [
-    toolFormat.format(tool.number),                                          //<probe_tool_number> = #1    (=99)
-    xyzFormat.format(cycle.clearance && cycle.depth && cycle.probeOvertravel ? 
-      cycle.clearance + cycle.probeOvertravel: 0.5),                         //<max_z_distance> = #2      (=0.5000)
-    xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
-      cycle.probeClearance + cycle.probeOvertravel: 0.5),                    //<max_xy_distance> = #3      (=0.5000)
-    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<xy_clearance> = #4         (=0.1000)
-    xyzFormat.format(cycle.retract && cycle.bottom ? 
-      cycle.retract - cycle.bottom : 0),                                     //<z_clearance> = #5          (=0.1000)
-    xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0),         //<step_off_width> = #6       (=0.5000)
-    xyzFormat.format(tool.diameter ? -tool.diameter : 0),                    //<extra_probe_depth> = #7    (=0.0000)
-    feedFormat.format(hasParameter("operation:tool_feedProbeMeasure") ? 
-      getParameter("operation:tool_feedProbeMeasure"): cycle.feedrate / 10), //<probe_slow_fr> = #8        (=0.0)
-    feedFormat.format(cycle.feedrate ? cycle.feedrate : 10),                 //<probe_fast_fr> = #9        (=10.0)
-    xyzFormat.format(0),                                                     //<calibration_offset> = #10  (=0.0000)
-    xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<x_hint> = #11              (=1.0000)
-    xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<y_hint> = #12              (=1.0000)
-    xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<diameter_hint> = #13       (=1.0000)
-    xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<edge_width> = #14          (=0.5000)
-    commitWCS == 1 ? 0 : 1,                                                  //<probe_mode> = #15          (=0)
-    Number(commitWCS),                                                       //<wco_rotation> = #16        (=0)
-  ];
-}
-
 function onCyclePoint(x, y, z) {
   var forward;
   if (currentSection.isOptimizedForMachine()) {
@@ -1419,53 +1433,49 @@ function onCyclePoint(x, y, z) {
     return;
   }
   switch (cycleType) {
-    case "tapping":
-    case "left-tapping":
-    case "right-tapping":
-      cycleExpanded = true;
-      repositionToCycleClearance(cycle, x, y, z);
-      writeBlock(
-        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-        conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.retract)),
-        conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.retract)),
-        conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.retract)),
-        conditional(!getProperty("useG0"), getFeed(highFeedrate))
-      );
-      writeBlock(
-        gAbsIncModal.format(90), gFormat.format(33.1),
-        conditional(gPlaneModal.getCurrent() == 17, zOutput.format(z)),
-        conditional(gPlaneModal.getCurrent() == 18, yOutput.format(y)),
-        conditional(gPlaneModal.getCurrent() == 19, xOutput.format(x)),
-        "K" + pitchFormat.format(tool.threadPitch)
-      );
-      gMotionModal.reset();
-      writeBlock(
-        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-        conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.clearance)),
-        conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.clearance)),
-        conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.clearance)),
-        conditional(!getProperty("useG0"), getFeed(highFeedrate))
-      );
-      return;
-    /*
-    case "tapping-with-chip-breaking":
-    case "left-tapping-with-chip-breaking":
-    case "right-tapping-with-chip-breaking":
-    */
+  case "tapping":
+  case "left-tapping":
+  case "right-tapping":
+    cycleExpanded = true;
+    repositionToCycleClearance(cycle, x, y, z);
+    writeBlock(
+      gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
+      conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.retract)),
+      conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.retract)),
+      conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.retract)),
+      conditional(!getProperty("useG0"), getFeed(highFeedrate))
+    );
+    writeBlock(
+      gAbsIncModal.format(90), gFormat.format(33.1),
+      conditional(gPlaneModal.getCurrent() == 17, zOutput.format(z)),
+      conditional(gPlaneModal.getCurrent() == 18, yOutput.format(y)),
+      conditional(gPlaneModal.getCurrent() == 19, xOutput.format(x)),
+      "K" + pitchFormat.format(tool.threadPitch)
+    );
+    gMotionModal.reset();
+    writeBlock(
+      gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
+      conditional(gPlaneModal.getCurrent() == 17, zOutput.format(cycle.clearance)),
+      conditional(gPlaneModal.getCurrent() == 18, yOutput.format(cycle.clearance)),
+      conditional(gPlaneModal.getCurrent() == 19, xOutput.format(cycle.clearance)),
+      conditional(!getProperty("useG0"), getFeed(highFeedrate))
+    );
+    return;
+  /*
+  case "tapping-with-chip-breaking":
+  case "left-tapping-with-chip-breaking":
+  case "right-tapping-with-chip-breaking":
+  */
   }
 
-  if (isFirstCyclePoint() || isProbeOperation()) {
-    if (!isProbeOperation()){
-      // return to initial Z which is clearance plane and set absolute mode
-      repositionToCycleClearance(cycle, x, y, z);
-    }
-    
-    var F = cycle.feedrate;
-    var P = !cycle.dwell ? 0 : clamp(0.001, cycle.dwell, 99999999); // in seconds"
+  if (isFirstCyclePoint()) {
+    repositionToCycleClearance(cycle, x, y, z);
 
-    var subroutineName;
-    var commitWCS = hasParameter("operation-strategy") ? getParameter("operation-strategy") == "probe" : false; 
-    
+    // return to initial Z which is clearance plane and set absolute mode
+
+    var F = cycle.feedrate;
+    var P = !cycle.dwell ? 0 : clamp(0.001, cycle.dwell, 99999999); // in seconds
+
     switch (cycleType) {
     case "drilling":
       writeBlock(
@@ -1524,6 +1534,10 @@ function onCyclePoint(x, y, z) {
       break;
     */
     case "reaming":
+      if (feedFormat.getResultingValue(cycle.feedrate) != feedFormat.getResultingValue(cycle.retractFeedrate)) {
+        expandCyclePoint(x, y, z);
+        break;
+      }
       if (P > 0) {
         writeBlock(
           gRetractModal.format(98), gAbsIncModal.format(90), gCycleModal.format(89),
@@ -1556,6 +1570,10 @@ function onCyclePoint(x, y, z) {
       );
       break;
     case "boring":
+      if (feedFormat.getResultingValue(cycle.feedrate) != feedFormat.getResultingValue(cycle.retractFeedrate)) {
+        expandCyclePoint(x, y, z);
+        break;
+      }
       if (P > 0) {
         writeBlock(
           gRetractModal.format(98), gAbsIncModal.format(90), gCycleModal.format(89),
@@ -1571,147 +1589,6 @@ function onCyclePoint(x, y, z) {
         );
       }
       break;
-    // Begin Probing WCO Operations
-    case "probing-x":
-      var zProbeStack = cycle.bottom;
-      writeBlock(
-        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-        zOutput.format(zProbeStack),
-        conditional(!getProperty("useG0"), feedOutput.format(cycle.plungeFeedrate))
-      );
-      subroutineName = cycle.approach1 == "negative" ? "probe_x_minus_wco" : "probe_x_plus_wco";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-y":
-      var zProbeStack = cycle.bottom;
-      writeBlock(
-        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-        zOutput.format(zProbeStack),
-        conditional(!getProperty("useG0"), feedOutput.format(cycle.plungeFeedrate))
-      );
-      subroutineName = cycle.approach1 == "negative" ? "probe_y_minus_wco" : "probe_y_plus_wco";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-z":
-      subroutineName = "probe_z_minus_wco";
-      callSubroutine(
-        subroutineName,
-        [
-          toolFormat.format(tool.number),                                          //<probe_tool_number> = #1    (=99)
-          xyzFormat.format(cycle.clearance && cycle.depth && cycle.probeOvertravel ? 
-            cycle.clearance + cycle.probeOvertravel: 0.5),                         //<max_z_distance> = #2      (=0.5000)
-          xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
-            cycle.probeClearance + cycle.probeOvertravel: 0.5),                    //<max_xy_distance> = #3      (=0.5000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<xy_clearance> = #4         (=0.1000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<z_clearance> = #5          (=0.1000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),     //<step_off_width> = #6       (=0.5000)
-          xyzFormat.format(0),                                                     //<extra_probe_depth> = #7    (=0.0000)
-          feedFormat.format(hasParameter("operation:tool_feedProbeMeasure") ? 
-            getParameter("operation:tool_feedProbeMeasure"): cycle.feedrate / 10), //<probe_slow_fr> = #8        (=0.0)
-          feedFormat.format(cycle.feedrate ? cycle.feedrate : 10),                 //<probe_fast_fr> = #9        (=10.0)
-          xyzFormat.format(0),                                                     //<calibration_offset> = #10  (=0.0000)
-          xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<x_hint> = #11              (=1.0000)
-          xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<y_hint> = #12              (=1.0000)
-          xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<diameter_hint> = #13       (=1.0000)
-          xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<edge_width> = #14          (=0.5000)
-          commitWCS == 1 ? 0 : 1,                                                  //<probe_mode> = #15          (=0)
-          Number(commitWCS),                                                       //<wco_rotation> = #16        (=0)
-        ]
-      );
-      break;
-    case "inspect":
-      subroutineName = "probe_z_minus_wco";
-      callSubroutine(
-        subroutineName,
-        [
-          toolFormat.format(tool.number),                                          //<probe_tool_number> = #1    (=99)
-          xyzFormat.format(hasParameter("operation:retractHeight_value") ? 
-            getParameter("operation:retractHeight_value") + cycle.probeOvertravel: 
-            cycle.probeOvertravel),                                                //<max_z_distance> = #2      (=0.5000)
-          xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
-            cycle.probeClearance + cycle.probeOvertravel: 0.5),                    //<max_xy_distance> = #3      (=0.5000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<xy_clearance> = #4         (=0.1000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<z_clearance> = #5          (=0.1000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),     //<step_off_width> = #6       (=0.5000)
-          xyzFormat.format(0),                                                     //<extra_probe_depth> = #7    (=0.0000)
-          feedFormat.format(hasParameter("operation:tool_feedProbeMeasure") ? 
-            getParameter("operation:tool_feedProbeMeasure"): cycle.feedrate / 10), //<probe_slow_fr> = #8        (=0.0)
-          feedFormat.format(cycle.feedrate ? cycle.feedrate : 10),                 //<probe_fast_fr> = #9        (=10.0)
-          xyzFormat.format(0),                                                     //<calibration_offset> = #10  (=0.0000)
-          xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<x_hint> = #11              (=1.0000)
-          xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<y_hint> = #12              (=1.0000)
-          xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<diameter_hint> = #13       (=1.0000)
-          xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<edge_width> = #14          (=0.5000)
-          commitWCS == 1 ? 0 : -1,                                                 //<probe_mode> = #15          (=0)
-          Number(commitWCS),                                                       //<wco_rotation> = #16        (=0)
-        ]
-      );
-      break;
-    case "probing-x-wall":
-    case "probing-x-channel":
-    case "probing-x-channel-with-island":
-      var zProbeStack = cycle.retract;
-      writeBlock(
-        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-        zOutput.format(zProbeStack),
-        conditional(!getProperty("useG0"), feedOutput.format(cycle.plungeFeedrate))
-      );
-      subroutineName = "probe_ridge_x";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-x-plane-angle":
-      subroutineName = cycle.approach1 == "negative" ? "probe_left_edge_angle" : "probe_right_edge_angle";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-y-wall":
-    case "probing-y-channel":
-    case "probing-y-channel-with-island":
-      subroutineName = "probe_ridge_y";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-y-plane-angle":
-      subroutineName = cycle.approach1 == "negative" ? "probe_back_edge_angle" : "probe_front_edge_angle";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-xy-circular-boss":
-      subroutineName = "probe_round_boss";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    case "probing-xy-circular-hole":
-      var zProbeStack = cycle.retract
-      writeBlock(
-        gAbsIncModal.format(90), gMotionModal.format(getProperty("useG0") ? 0 : 1),
-        zOutput.format(zProbeStack),
-        conditional(!getProperty("useG0"), feedOutput.format(cycle.plungeFeedrate))
-      );
-      subroutineName = "probe_round_pocket";
-      callSubroutine(
-        subroutineName,
-        getProbingArguments(cycle, commitWCS)
-      );
-      break;
-    // End Probing WCO Operations
     default:
       expandCyclePoint(x, y, z);
     }
@@ -1744,18 +1621,14 @@ function onCyclePoint(x, y, z) {
 }
 
 function onCycleEnd() {
-  if (isProbeOperation()) {
-    zOutput.reset();
+  if (!cycleExpanded) {
+    writeBlock(gCycleModal.format(80));
     gMotionModal.reset();
-  } else {
-    if (!cycleExpanded) {
-      writeBlock(gCycleModal.format(80));
-      gMotionModal.reset();
-    }
   }
 }
 
 var pendingRadiusCompensation = -1;
+
 function onRadiusCompensation() {
   pendingRadiusCompensation = radiusCompensation;
 }
@@ -2068,12 +1941,6 @@ function getCoolantCodes(coolant) {
   return undefined;
 }
 
-function onProbingEnd() {
-    // probing may change the motion mode, so it needs to be re-established in the next move
-    forceXYZ();
-    gMotionModal.reset();
-}
-
 var mapCommand = {
   COMMAND_END                     : 2,
   COMMAND_SPINDLE_CLOCKWISE       : 3,
@@ -2106,10 +1973,6 @@ function onCommand(command) {
     return;
   case COMMAND_TOOL_MEASURE:
     return;
-  case COMMAND_PROBE_ON:
-    return;
-  case COMMAND_PROBE_OFF:
-    return;
   }
 
   var stringId = getCommandStringId(command);
@@ -2136,10 +1999,6 @@ function onSectionEnd() {
     onCommand(COMMAND_BREAK_CONTROL);
   }
   forceAny();
-  if (isProbeOperation())
-  {
-    endWritingProbingCoordinates();
-  }
 }
 
 /** Output block to do safe retract and/or move to home position. */
@@ -2237,42 +2096,4 @@ function onClose() {
   writeBlock(mFormat.format(30)); // stop program, spindle stop, coolant off
   writeln("(AXIS,stop)"); // disable LinuxCNC visualization
   writeln("%");
-}
-
-function callSubroutine(programName, programArguments) {
-  if (programName) {
-    var argList = "";
-    for (var arg in programArguments)
-    {
-      argList += " [" + programArguments[arg] + "]";
-    }
-    writeBlock("o<" + programName + ">", "call" + argList);
-    forceFeed();
-  } else {
-    error(localize("Program name has not been specified."));
-    return;
-  }
-}
-
-function beginWritingProbingCoordinates() {
-  var fileName;
-  if (hasParameter("operation-comment")) {
-    fileName = getParameter("operation-comment");
-  } else if (programName) {
-    fileName = programName;
-  } else {
-    fileName = "probe-results"
-  }
-  var fileExtension = ".ngc";
-  fileName = fileName.replace(/\s/g, '');
-
-  writeComment("PROBEOPEN " + fileName + fileExtension);
-}
-
-function endWritingProbingCoordinates() {
-  writeComment("PROBECLOSE");
-}
-
-function setProperty(property, value) {
-  properties[property].current = value;
 }
