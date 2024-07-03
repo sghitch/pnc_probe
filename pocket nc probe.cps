@@ -1464,7 +1464,7 @@ function onCyclePoint(x, y, z) {
     var P = !cycle.dwell ? 0 : clamp(0.001, cycle.dwell, 99999999); // in seconds"
 
     var subroutineName;
-    var commitWCS = hasParameter("operation-strategy") ? getParameter("operation-strategy") == "probe" : false; 
+    var commitWCS = hasParameter("probeWorkOffset") ? getParameter("probeWorkOffset") : -1; 
     
     switch (cycleType) {
     case "drilling":
