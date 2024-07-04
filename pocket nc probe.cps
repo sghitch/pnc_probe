@@ -1356,7 +1356,7 @@ function onSection() {
 
   if (isProbeOperation())
   {
-    beginWritingProbingCoordinates();
+    
   }
 }
 
@@ -1625,34 +1625,6 @@ function onCyclePoint(x, y, z) {
         ]
       );
       break;
-    case "inspect":
-      subroutineName = "probe_z_minus_wco";
-      callSubroutine(
-        subroutineName,
-        [
-          toolFormat.format(tool.number),                                          //<probe_tool_number> = #1    (=99)
-          xyzFormat.format(hasParameter("operation:retractHeight_value") ? 
-            getParameter("operation:retractHeight_value") + cycle.probeOvertravel: 
-            cycle.probeOvertravel),                                                //<max_z_distance> = #2      (=0.5000)
-          xyzFormat.format(cycle.probeClearance && cycle.probeOvertravel ? 
-            cycle.probeClearance + cycle.probeOvertravel: 0.5),                    //<max_xy_distance> = #3      (=0.5000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<xy_clearance> = #4         (=0.1000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.1),     //<z_clearance> = #5          (=0.1000)
-          xyzFormat.format(cycle.probeClearance ? cycle.probeClearance : 0.5),     //<step_off_width> = #6       (=0.5000)
-          xyzFormat.format(0),                                                     //<extra_probe_depth> = #7    (=0.0000)
-          feedFormat.format(hasParameter("operation:tool_feedProbeMeasure") ? 
-            getParameter("operation:tool_feedProbeMeasure"): cycle.feedrate / 10), //<probe_slow_fr> = #8        (=0.0)
-          feedFormat.format(cycle.feedrate ? cycle.feedrate : 10),                 //<probe_fast_fr> = #9        (=10.0)
-          xyzFormat.format(0),                                                     //<calibration_offset> = #10  (=0.0000)
-          xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<x_hint> = #11              (=1.0000)
-          xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<y_hint> = #12              (=1.0000)
-          xyzFormat.format(cycle.width1 ? cycle.width1 : 1.0),                     //<diameter_hint> = #13       (=1.0000)
-          xyzFormat.format(cycle.width2 ? cycle.width2 : 1.0),                     //<edge_width> = #14          (=0.5000)
-          commitWCS == 1 ? 0 : -1,                                                 //<probe_mode> = #15          (=0)
-          Number(commitWCS),                                                       //<wco_rotation> = #16        (=0)
-        ]
-      );
-      break;
     case "probing-x-wall":
     case "probing-x-channel":
     case "probing-x-channel-with-island":
@@ -1711,9 +1683,29 @@ function onCyclePoint(x, y, z) {
         getProbingArguments(cycle, commitWCS)
       );
       break;
+    case "inspect":
+      writeComment("Point " + getParameter("pointID"));
+      var _x = xOutput.format(x);
+      var _y = yOutput.format(y);
+      var _z = zOutput.format(z);
+      writeBlock(_x, _y, _z);
+      break;
     // End Probing WCO Operations
     default:
       expandCyclePoint(x, y, z);
+    }
+  } else if (cycleType == "inspect") {
+    var _x = xOutput.format(x);
+    var _y = yOutput.format(y);
+    var _z = zOutput.format(z);
+    if (!_x && !_y && _z) {
+      writeBlock(feedOutput.format(cycle.measureFeed))
+      writeBlock(
+        gMotionModal.format(34.3),
+        _z
+      );
+    } else {
+      writeBlock(_x, _y, _z);
     }
   } else {
     if (cycleExpanded) {
@@ -2107,8 +2099,10 @@ function onCommand(command) {
   case COMMAND_TOOL_MEASURE:
     return;
   case COMMAND_PROBE_ON:
+    beginWritingProbingCoordinates();
     return;
   case COMMAND_PROBE_OFF:
+    endWritingProbingCoordinates();
     return;
   }
 
@@ -2255,6 +2249,8 @@ function callSubroutine(programName, programArguments) {
 }
 
 function beginWritingProbingCoordinates() {
+  var rootPath = "/home/pocketnc/ncfiles/";
+
   var fileName;
   if (hasParameter("operation-comment")) {
     fileName = getParameter("operation-comment");
@@ -2263,10 +2259,10 @@ function beginWritingProbingCoordinates() {
   } else {
     fileName = "probe-results"
   }
-  var fileExtension = ".ngc";
+  var fileExtension = ".txt";
   fileName = fileName.replace(/\s/g, '');
 
-  writeComment("PROBEOPEN " + fileName + fileExtension);
+  writeComment("PROBEOPEN " + rootPath + fileName + fileExtension);
 }
 
 function endWritingProbingCoordinates() {
