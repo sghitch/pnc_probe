@@ -1,0 +1,9 @@
+#!/bin/bash
+
+halcmd setp solo-probe.probe-awake
+halcmd loadrt debounce cfg=1
+halcmd addf debounce.0 base-thread
+halcmd setp debounce.0.delay $1
+halcmd unlinkp motion.probe-input
+halcmd net probe-in debounce.0.0.in
+halcmd net probe-filt debounce.0.0.out => motion.probe-input
