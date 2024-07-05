@@ -275,6 +275,7 @@ var rpmFormat = createFormat({decimals:0});
 var secFormat = createFormat({decimals:3, forceDecimal:true}); // seconds - range 0.001-99999.999
 var taperFormat = createFormat({decimals:1, scale:DEG});
 var inverseTimeFormat = createFormat({decimals:4, forceDecimal:true});
+var ijkFormat = createFormat({decimals:5, forceDecimal:true});
 
 var xOutput = createVariable({prefix:"X"}, xyzFormat);
 var yOutput = createVariable({prefix:"Y"}, xyzFormat);
@@ -358,6 +359,10 @@ function writeOptionalBlock() {
   } else {
     writeWords2("/", arguments);
   }
+}
+
+function formatProbe(text) {
+  return "(" + String(text).toUpperCase() + ")";
 }
 
 function formatComment(text) {
@@ -1353,11 +1358,6 @@ function onSection() {
       writeBlock(gFormat.format(64), "P" + xyzFormat.format(getProperty("smoothingTolerance")));
     }
   }
-
-  if (isProbeOperation())
-  {
-    
-  }
 }
 
 function onDwell(seconds) {
@@ -1684,7 +1684,9 @@ function onCyclePoint(x, y, z) {
       );
       break;
     case "inspect":
-      writeComment("Point " + getParameter("pointID"));
+      inspectionWriteCADTransform();
+      inspectionWriteWorkplaneTransform();
+      inspectionWriteNominalData(cycle);
       var _x = xOutput.format(x);
       var _y = yOutput.format(y);
       var _z = zOutput.format(z);
@@ -1695,17 +1697,27 @@ function onCyclePoint(x, y, z) {
       expandCyclePoint(x, y, z);
     }
   } else if (cycleType == "inspect") {
+    var nominalPoint = cycle.nominalPoint;
+    var initialPoint = getCyclePoint(0);
+    var previousPoint = getCyclePoint(getCyclePointId() - 1); // Can never be less than 1
+    var nextPoint = new Vector(x, y, z);
+
     var _x = xOutput.format(x);
     var _y = yOutput.format(y);
     var _z = zOutput.format(z);
-    if (!_x && !_y && _z) {
-      writeBlock(feedOutput.format(cycle.measureFeed))
+
+    // Test if this move passes over the nominal point in any dimension
+    if (isProbingMove(nominalPoint, initialPoint, previousPoint, nextPoint)) {
+      writeBlock(feedOutput.format(cycle.measureFeed));
       writeBlock(
-        gMotionModal.format(34.3),
+        gMotionModal.format(38.2),
+        _x,
+        _y,
         _z
       );
+      inspectionWriteMeasuredData(cycle, "#5061", "#5062", "#5063");
     } else {
-      writeBlock(_x, _y, _z);
+      writeBlock(gMotionModal.format(0), _x, _y, _z);
     }
   } else {
     if (cycleExpanded) {
@@ -1733,6 +1745,30 @@ function onCyclePoint(x, y, z) {
       writeBlock(_x, _y, _z);
     }
   }
+}
+
+function isProbingMove(nominalPoint, initialPoint, previousPoint, nextPoint) {
+  // writeComment("Nominal " + nominalPoint.x + " " + nominalPoint.y + " "+ nominalPoint.z);
+  // writeComment("Initial " + initialPoint.x + " " + initialPoint.y + " "+ initialPoint.z);
+  // writeComment("Previous " + previousPoint.x + " " + previousPoint.y + " "+ previousPoint.z);
+  // writeComment("Next " + nextPoint.x + " " + nextPoint.y + " "+ nextPoint.z);
+  var isNextXOtherSideOfNominal = !sameSideOfNominal(nominalPoint.x, previousPoint.x, nextPoint.x);
+  var isNextXFarSideOfNominal = !sameSideOfNominal(nominalPoint.x, initialPoint.x, nextPoint.x);
+  var isNextYOtherSideOfNominal = !sameSideOfNominal(nominalPoint.y, previousPoint.y, nextPoint.y);
+  var isNextYFarSideOfNominal = !sameSideOfNominal(nominalPoint.y, initialPoint.y, nextPoint.y);
+  var isNextZOtherSideOfNominal = !sameSideOfNominal(nominalPoint.z, previousPoint.z, nextPoint.z);
+  var isNextZFarSideOfNominal = !sameSideOfNominal(nominalPoint.z, initialPoint.z, nextPoint.z);
+
+  var xProbe = isNextXOtherSideOfNominal && isNextXFarSideOfNominal;
+  var yProbe = isNextYOtherSideOfNominal && isNextYFarSideOfNominal;
+  var zProbe = isNextZOtherSideOfNominal && isNextZFarSideOfNominal;
+
+  return xProbe || yProbe || zProbe;
+}
+
+function sameSideOfNominal(nominal, previous, next) {
+  return (previous <= nominal && next <= nominal) ||
+    (previous >= nominal && next >= nominal);
 }
 
 function onCycleEnd() {
@@ -2251,7 +2287,7 @@ function callSubroutine(programName, programArguments) {
 function beginWritingProbingCoordinates() {
   var rootPath = "/home/pocketnc/ncfiles/";
 
-  var fileName;
+  var fileName = "filename"
   if (hasParameter("operation-comment")) {
     fileName = getParameter("operation-comment");
   } else if (programName) {
@@ -2260,13 +2296,96 @@ function beginWritingProbingCoordinates() {
     fileName = "probe-results"
   }
   var fileExtension = ".txt";
+  fileName = fileName.replace(')', '');
+  fileName = fileName.replace('(', '');
   fileName = fileName.replace(/\s/g, '');
 
-  writeComment("PROBEOPEN " + rootPath + fileName + fileExtension);
+  writeln("(LOGOPEN," + rootPath + fileName + fileExtension + ")");
+  writeln("(LOG,START)");
+  writeln("(LOG,RESULTSFILE " + fileName +")");
+  writeProbingToolpathInformation();
+}
+
+function inspectionWriteNominalData(cycle) {
+  var m = getRotation();
+  var v = new Vector(cycle.nominalX, cycle.nominalY, cycle.nominalZ);
+  var vt = m.multiply(v);
+  var pathVector = new Vector(cycle.nominalI, cycle.nominalJ, cycle.nominalK);
+  var nv = m.multiply(pathVector).normalized;
+  cycle.nominalX = vt.x;
+  cycle.nominalY = vt.y;
+  cycle.nominalZ = vt.z;
+  cycle.nominalI = nv.x;
+  cycle.nominalJ = nv.y;
+  cycle.nominalK = nv.z;
+  if (getProperty("useLiveConnection") && controlType != "NGC") {
+    return;
+  }
+  writeln("(LOG,G800" +
+    " N" + cycle.pointID +
+    " X" + xyzFormat.format(cycle.nominalX) +
+    " Y" + xyzFormat.format(cycle.nominalY) +
+    " Z" + xyzFormat.format(cycle.nominalZ) +
+    " I" + ijkFormat.format(cycle.nominalI) +
+    " J" + ijkFormat.format(cycle.nominalJ) +
+    " K" + ijkFormat.format(cycle.nominalK) +
+    " O" + xyzFormat.format(getParameter("operation:inspectSurfaceOffset")) +
+    " U" + xyzFormat.format(getParameter("operation:inspectUpperTolerance")) +
+    " L" + xyzFormat.format(getParameter("operation:inspectLowerTolerance")) +
+    ")"
+  );
+}
+
+function inspectionWriteMeasuredData(cycle, probeX, probeY, probeZ) {
+  writeln("(LOG,G801" +
+    " N" + cycle.pointID +
+    " X" + probeX +
+    " Y" + probeY +
+    " Z" + probeZ +
+    " R" + xyzFormat.format(tool.diameter) +
+    ")"
+  );
+}
+
+function writeProbingToolpathInformation() {
+  var comment = getParameter("operation-comment");
+    comment = comment.replace('(', '');
+    comment =  comment.replace(')', '');
+    writeln("(LOG,TOOLPATH " + comment + ")");
+}
+
+function inspectionWriteCADTransform() {
+  var cadOrigin = currentSection.getModelOrigin();
+  var cadWorkPlane = currentSection.getModelPlane().getTransposed();
+  var cadEuler = cadWorkPlane.getEuler2(EULER_XYZ_S);
+  writeln(
+    "(LOG,G331" +
+    " N" + cycle.pointID +
+    " A" + abcFormat.format(cadEuler.x) +
+    " B" + abcFormat.format(cadEuler.y) +
+    " C" + abcFormat.format(cadEuler.z) +
+    " X" + xyzFormat.format(-cadOrigin.x) +
+    " Y" + xyzFormat.format(-cadOrigin.y) +
+    " Z" + xyzFormat.format(-cadOrigin.z) +
+    ")"
+  );
+}
+
+function inspectionWriteWorkplaneTransform() {
+  var orientation = (machineConfiguration.isMultiAxisConfiguration()) ? machineConfiguration.getOrientation(getCurrentDirection()) : currentSection.workPlane;
+  var abc = orientation.getEuler2(EULER_XYZ_S);
+  writeln("(LOG,G330" +
+    " N" + cycle.pointID +
+    " A" + abcFormat.format(abc.x) +
+    " B" + abcFormat.format(abc.y) +
+    " C" + abcFormat.format(abc.z) +
+    " X0 Y0 Z0 I0 R0)"
+  );
 }
 
 function endWritingProbingCoordinates() {
-  writeComment("PROBECLOSE");
+  writeln("(LOG,END)");
+  writeln("(LOGCLOSE)");
 }
 
 function setProperty(property, value) {
